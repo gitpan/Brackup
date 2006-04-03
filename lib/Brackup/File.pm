@@ -79,10 +79,6 @@ sub fullpath {
     return $self->{root}->path . "/" . $self->{path};
 }
 
-sub parts {
-    return ("foo", "bar");
-}
-
 # a scalar that hopefully uniquely represents a single version of a file in time.
 sub cachekey {
     my $self = shift;
@@ -95,7 +91,7 @@ sub foreach_chunk {
     my ($self, $cb) = @_;
 
     foreach my $chunk ($self->chunks) {
-	$cb->($chunk);
+        $cb->($chunk);
     }
 }
 
@@ -113,18 +109,18 @@ sub chunks {
     # non-files don't have chunks
     my @list;
     if ($self->is_file) {
-	my $offset = 0;
-	my $size   = $self->size;
-	while ($offset < $size) {
-	    my $len = _min($chunk_size, $size - $offset);
-	    my $chunk = Brackup::Chunk->new(
-					    file   => $self,
-					    offset => $offset,
-					    length => $len,
-					    );
-	    push @list, $chunk;
-	    $offset += $len;
-	}
+        my $offset = 0;
+        my $size   = $self->size;
+        while ($offset < $size) {
+            my $len = _min($chunk_size, $size - $offset);
+            my $chunk = Brackup::Chunk->new(
+                                            file   => $self,
+                                            offset => $offset,
+                                            length => $len,
+                                            );
+            push @list, $chunk;
+            $offset += $len;
+        }
     }
 
     $self->{chunks} = \@list;
@@ -159,6 +155,11 @@ sub link_target {
     return $self->{linktarget} = readlink($self->fullpath);
 }
 
+sub path {
+    my $self = shift;
+    return $self->{path};
+}
+
 sub as_string {
     my $self = shift;
     my $type = $self->type;
@@ -169,24 +170,32 @@ sub as_rfc822 {
     my $self = shift;
     my $ret = "";
     my $set = sub {
-	my ($key, $val) = @_;
-	return unless length $val;
-	$ret .= "$key: $val\n";
+        my ($key, $val) = @_;
+        return unless length $val;
+        $ret .= "$key: $val\n";
     };
+    my $st = $self->stat;
+
     $set->("Path", $self->{path});
     if ($self->is_file) {
-	$set->("Size", $self->size);
-	$set->("Digest", $self->full_digest);
+        my $size = $self->size;
+        $set->("Size", $size);
+        $set->("Digest", $self->full_digest) if $size;
     } else {
-	$set->("Type", $self->type);
-	if  ($self->is_link) {
-	    $set->("Link", $self->link_target);
-	}
+        $set->("Type", $self->type);
+        if  ($self->is_link) {
+            $set->("Link", $self->link_target);
+        }
     }
     $set->("Chunks", join("\n ", map { $_->to_meta } $self->chunks));
+
+    unless ($self->is_link) {
+        $set->("Mtime", $st->mtime);
+        $set->("Atime", $st->atime);
+        $set->("Mode", sprintf('%#o', $st->mode & 0777));
+    }
 
     return $ret . "\n";
 }
 
 1;
-
