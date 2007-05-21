@@ -1,3 +1,5 @@
+-- FUSE script to mount a *.brackup file
+
 -- fix up docs, move all to POD, in relevant classes.
 
 -- tool to clean digestcache, based on prefixes, looking for files that no longer
@@ -6,6 +8,15 @@
    but then no longer just a dictionary.  SQLite would work, but we'd ideally
    like lots of dumber cache mechanisms.  maybe a ->clean method is optional?
    then a memcached backend/etc doesn't have to use it.
+
+-- Tools to rebuild your inventory database from the target's enumeration
+   of its chunks and the target's *.brackup metafiles isn't yet done, but
+   would be pretty easy.  
+
+-- find/clean orphan chunks on a target from metafiles
+
+-- (a future version of brackup-restore will let you grab the metafile from
+   the target, but that's still a TODO item)
 
 -- ionice stuff.  network nice stuff.
 
