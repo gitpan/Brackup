@@ -1,23 +1,27 @@
--- proactively clean temp files, as aborts/segvs in middle can leave
-   tens of thousands of files in /tmp, filling it up.  (report from
-   kvance)
+-- fix up docs, move all to POD, in relevant classes.
+
+-- tool to clean digestcache, based on prefixes, looking for files that no longer
+   exist or have new mtimes, etc?  or keep track of "last used" date
+   field in the digestcache and just delete things that are too old?
+   but then no longer just a dictionary.  SQLite would work, but we'd ideally
+   like lots of dumber cache mechanisms.  maybe a ->clean method is optional?
+   then a memcached backend/etc doesn't have to use it.
+
+-- ionice stuff.  network nice stuff.
+
+-- leaking 3 /tmp files after each run
+
+-- make tests pass without 'noatime' mount option
+
+-- --ignore-debian-files option (if managed by a package management
+   system (and not an unmodified conffile), don't back it up)
 
 -- reuse tempfiles in Chunk.pm as Restore.pm does
 
 -- restoring from existing config file.
 
--- restoring subsets of files
-
 -- better test coverage.  currently at 84%.  should ignore
    test coverage of test modules.  move Brackup::Test to
    t/lib/ probably
-
--- Amazon target doesn't support restoring yet.
-
--- Amazon target should complain if you don't have an exist_cache
-   configured (otherwise it's damn slow)
-
--- default config written out should include exist cache line for
-   Amazon too
 
 -- should do TODOs in code.  :)

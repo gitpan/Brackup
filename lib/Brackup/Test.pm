@@ -13,16 +13,17 @@ use File::Find;
 use File::stat ();
 use Cwd;
 
-use Brackup::Root;
-use Brackup::Config;
-use Brackup::Backup;
-use Brackup::Restore;
-use Brackup::DigestDatabase;
-use Brackup::Target;
-use Brackup::File;
-use Brackup::Chunk;
+use Brackup;
 
 my $has_diff = eval "use Text::Diff; 1;";
+
+my @to_unlink;
+my $par_pid = $$;
+END {
+    if ($$ == $par_pid) {
+        my $rv = unlink @to_unlink;
+    }
+}
 
 sub do_backup {
     my %opts = @_;
@@ -46,8 +47,12 @@ sub do_backup {
     my $backup_dir = tempdir( CLEANUP => 1 );
     ok_dir_empty($backup_dir);
 
+    my ($inv_fh, $inv_filename) = tempfile();
+    push @to_unlink, $inv_filename;
+
     $confsec = Brackup::ConfigSection->new("TARGET:test_restore");
     $confsec->add("type" => "Filesystem");
+    $confsec->add("inventory_db" => $inv_filename);
     $confsec->add("path" => $backup_dir);
     $conf->add_section($confsec);
 
@@ -62,6 +67,7 @@ sub do_backup {
 
     my ($meta_fh, $meta_filename) = tempfile();
     ok(-e $meta_filename, "metafile exists");
+    push @to_unlink, $meta_filename;
 
     ok(eval { $backup->backup($meta_filename) }, "backup succeeded");
     if ($@) {
@@ -82,7 +88,8 @@ sub do_restore {
                                         file   => $backup_file,
                                         );
     ok($restore, "have restore object");
-    ok(eval { $restore->restore; }, "did the restore: $@");
+    ok(eval { $restore->restore; }, "did the restore")
+        or die "restore failed: $@";
     return $restore_dir;
 }
 
@@ -119,12 +126,13 @@ sub dir_structure {
 
     find({
         no_chdir => 1,
+        preprocess => sub { return sort @_ },
         wanted => sub {
             my $path = $_;
             my $st = File::stat::lstat($path);
 
             my $meta = {};
-            $meta->{size} = $st->size;
+            $meta->{size} = $st->size unless -d $path;
             $meta->{is_file} = 1 if -f $path;
             $meta->{is_link} = 1 if -l $path;
             if ($meta->{is_link}) {
@@ -132,7 +140,7 @@ sub dir_structure {
             } else {
                 # we ignore these for links, since Linux doesn't let us restore anyway,
                 # as Linux as no lutimes(2) syscall, as of Linux 2.6.16 at least
-                $meta->{atime} = $st->atime;
+                $meta->{atime} = $st->atime if 0; # TODO: make tests work with atimes
                 $meta->{mtime} = $st->mtime;
                 $meta->{mode}  = sprintf('%#o', $st->mode & 0777);
             }

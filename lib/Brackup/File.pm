@@ -8,7 +8,7 @@ use Carp qw(croak);
 use File::stat ();
 use Fcntl qw(S_ISREG S_ISDIR S_ISLNK);
 use Digest::SHA1;
-use Brackup::Chunk;
+use Brackup::PositionedChunk;
 
 sub new {
     my ($class, %opts) = @_;
@@ -52,7 +52,9 @@ sub is_dir {
 
 sub is_link {
     my $self = shift;
-    return S_ISLNK($self->stat->mode);
+    my $result = eval { S_ISLNK($self->stat->mode) };
+    $result = -l $self->fullpath unless defined($result);
+    return $result;
 }
 
 sub is_file {
@@ -113,11 +115,11 @@ sub chunks {
         my $size   = $self->size;
         while ($offset < $size) {
             my $len = _min($chunk_size, $size - $offset);
-            my $chunk = Brackup::Chunk->new(
-                                            file   => $self,
-                                            offset => $offset,
-                                            length => $len,
-                                            );
+            my $chunk = Brackup::PositionedChunk->new(
+                                                      file   => $self,
+                                                      offset => $offset,
+                                                      length => $len,
+                                                      );
             push @list, $chunk;
             $offset += $len;
         }
@@ -129,22 +131,39 @@ sub chunks {
 
 sub full_digest {
     my $self = shift;
+    return $self->{_full_digest} ||= $self->_calc_full_digest;
+}
+
+sub _calc_full_digest {
+    my $self = shift;
     return "" unless $self->is_file;
 
-    my $db    = $self->{root}->digdb;
+    my $cache = $self->{root}->digest_cache;
     my $key   = $self->cachekey;
 
-    my $dig = $db->get($key);
+    my $dig = $cache->get($key);
     return $dig if $dig;
 
-    my $sha1 = Digest::SHA1->new;
-    my $path = $self->fullpath;
-    open (my $fh, $path) or die "Couldn't open $path: $!\n";
-    $sha1->addfile($fh);
-    close($fh);
+    # legacy migration thing... we used to more often store
+    # the chunk digests, not the file digests.  so try that
+    # first...
+    if ($self->chunks == 1) {
+        my ($chunk) = $self->chunks;
+        $dig = $cache->get($chunk->cachekey);
+    }
 
-    $dig = "sha1:" . $sha1->hexdigest;
-    $db->set($key, $dig);
+    unless ($dig) {
+        my $sha1 = Digest::SHA1->new;
+        my $path = $self->fullpath;
+        open (my $fh, $path) or die "Couldn't open $path: $!\n";
+        binmode($fh);
+        $sha1->addfile($fh);
+        close($fh);
+
+        $dig = "sha1:" . $sha1->hexdigest;
+    }
+
+    $cache->set($key => $dig);
     return $dig;
 }
 
@@ -166,8 +185,13 @@ sub as_string {
     return "[" . $self->{root}->as_string . "] t=$type $self->{path}";
 }
 
-sub as_rfc822 {
+sub mode {
     my $self = shift;
+    return sprintf('%#o', $self->stat->mode & 0777);
+}
+
+sub as_rfc822 {
+    my ($self, $schunk_list, $backup) = @_;
     my $ret = "";
     my $set = sub {
         my ($key, $val) = @_;
@@ -177,22 +201,28 @@ sub as_rfc822 {
     my $st = $self->stat;
 
     $set->("Path", $self->{path});
+    my $type = $self->type;
     if ($self->is_file) {
         my $size = $self->size;
         $set->("Size", $size);
         $set->("Digest", $self->full_digest) if $size;
     } else {
-        $set->("Type", $self->type);
+        $set->("Type", $type);
         if  ($self->is_link) {
             $set->("Link", $self->link_target);
         }
     }
-    $set->("Chunks", join("\n ", map { $_->to_meta } $self->chunks));
+    $set->("Chunks", join("\n ", map { $_->to_meta } @$schunk_list));
 
     unless ($self->is_link) {
         $set->("Mtime", $st->mtime);
-        $set->("Atime", $st->atime);
-        $set->("Mode", sprintf('%#o', $st->mode & 0777));
+        $set->("Atime", $st->atime) unless $self->root->noatime;
+
+        my $mode = $self->mode;
+        unless (($type eq "d" && $mode eq $backup->default_directory_mode) ||
+                ($type eq "f" && $mode eq $backup->default_file_mode)) {
+            $set->("Mode", $mode);
+        }
     }
 
     return $ret . "\n";

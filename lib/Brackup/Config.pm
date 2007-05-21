@@ -1,6 +1,7 @@
 package Brackup::Config;
 
 use strict;
+use Brackup::ConfigSection;
 use warnings;
 use Carp qw(croak);
 
@@ -53,6 +54,24 @@ sub load {
     return $self;
 }
 
+sub default_config_file_name {
+    my ($class) = @_;
+    
+    if ($ENV{HOME}) {
+        # Default for UNIX folk
+        return "$ENV{HOME}/.brackup.conf";
+    }
+    elsif ($ENV{APPDATA}) {
+        # For Windows users
+        return "$ENV{APPDATA}/brackup.conf";
+    }
+    else {
+        # Fall back on the current directory
+        return "brackup.conf";
+    }
+
+}
+
 sub write_dummy_config {
     my $file = shift;
     open (my $fh, ">$file") or return;
@@ -75,6 +94,7 @@ sub write_dummy_config {
 
 #[SOURCE:bradhome]
 #path = /raid/bradfitz/
+#noatime = 1
 #chunk_size = 64MB
 #ignore = ^\.thumbnails/
 #ignore = ^\.kde/share/thumbnails/
@@ -114,10 +134,10 @@ sub load_root {
 
 sub load_target {
     my ($self, $name) = @_;
-    my $conf = $self->{"TARGET:$name"} or
+    my $confsec = $self->{"TARGET:$name"} or
         die "Unknown target '$name'\n";
 
-    my $type = $conf->value("type") or
+    my $type = $confsec->value("type") or
         die "Target '$name' has no 'type'";
     die "Invalid characters in $name's 'type'"
         unless $type =~ /^\w+$/;
@@ -125,70 +145,12 @@ sub load_target {
     my $class = "Brackup::Target::$type";
     eval "use $class; 1;" or die
         "Failed to load ${name}'s driver: $@\n";
-    return "$class"->new($conf);
-}
-
-package Brackup::ConfigSection;
-use strict;
-use warnings;
-
-sub new {
-    my ($class, $name) = @_;
-    return bless {
-        _name      => $name,
-        _accessed  => {},  # key => 1
-    }, $class;
-}
-
-sub name {
-    my $self = shift;
-    return $self->{_name};
-}
-
-sub add {
-    my ($self, $key, $val) = @_;
-    push @{ $self->{$key} ||= [] }, $val;
-}
-
-sub unused_config {
-    my $self = shift;
-    return sort grep { $_ ne "_name" && $_ ne "_accessed" && ! $self->{_accessed}{$_} } keys %$self;
-}
-
-sub path_value {
-    my ($self, $key) = @_;
-    my $val = $self->value($key) || "";
-    die "Path '$key' of '$val' isn't a valid directory\n"
-        unless $val && -d $val;
-    return $val;
-}
-
-sub byte_value {
-    my ($self, $key) = @_;
-    my $val = $self->value($key);
-    return 0                unless $val;
-    return $1               if $val =~ /^(\d+)b?$/i;
-    return $1 * 1024        if $val =~ /^(\d+)kb?$/i;
-    return $1 * 1024 * 1024 if $val =~ /^(\d+)mb?$/i;
-    die "Unrecognized size format: '$val'\n";
-}
-
-sub value {
-    my ($self, $key) = @_;
-    $self->{_accessed}{$key} = 1;
-    my $vals = $self->{$key};
-    return undef unless $vals;
-    die "Configuration section '$self->{_name}' has multiple values of key '$key' where only one is expected.\n"
-        if @$vals > 1;
-    return $vals->[0];
-}
-
-sub values {
-    my ($self, $key) = @_;
-    $self->{_accessed}{$key} = 1;
-    my $vals = $self->{$key};
-    return () unless $vals;
-    return @$vals;
+    my $target = $class->new($confsec);
+    
+    if (my @unk_config = $confsec->unused_config) {
+        die "Unknown config params in TARGET:$name: @unk_config\n";
+    }
+    return $target;
 }
 
 1;

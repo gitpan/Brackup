@@ -1,3 +1,71 @@
+1.00 (may 21, 2007)
+
+  RELEASE NOTE: The author/maintainer of Brackup is finally happy now,
+    and has 40 GB of data stored on Amazon, encrypted.  You can
+    trust this now.  And the file formats aren't changing (or aren't
+    changing without being compatible with old *.brackup/Amazon
+    formats...)
+
+  - track in meta header the default (most often occuring) modes for
+    files and directories, then don't list those for each file/dir
+    with those mode.  saves on disk space on *.brackup files
+
+  - support 'noatime = 1' option on a source root, because atimes are
+    often useless, so waste of space in metafile.
+
+  - rename digestdb back to digestcache, now that it's purely a cache
+    again.
+
+  - fix memory leak in case where chunk exists on target, but local
+    digest database was lost, and digest of chunk had to be recomputed.
+    in that case, the raw chunk was kept in memory until the end
+    (which it likely would never reach, accumulating GBs of RAM)
+
+  - make PositionedChunk use the digest cache (which I guess was
+    re-fleshed out in the big refactor but never used...).  so
+    iterative backups are fast again... no re-reading all files
+    in, blowing away all caches.
+
+  - clean up old, dead code in Amazon target (the old inventory db which
+    is now an official part of the core, and in the Target base class)
+
+  - retry PUTs to Amazon on failure, a few times, pausing in-between,
+    in case it was a transient error, as seems to happen occasionally
+
+  - halve number of stats when walking backup root
+
+  - cleanups, strictness
+
+  - don't upload meta files when in dry-run mode
+
+  - update amazon target support to work again, with the new inventory
+    database support (now separated from the old digest database)
+
+  - merge in the refactoring branch, in which a lot of long-standing
+    pet peeves in the design were rethought/redone.
+
+  - make decryption --use-agent and --batch, and help out if env not set
+    and gpg-agent probably not running
+
+  - support putting .meta files besides .chunk files on the Target
+    to enable reconstructing the digest database in the future, should
+    it get lost.  also start to flesh out per-chunk digests, which
+    would enable backing up large databases (say, InnoDB tablespaces) where 
+    large chunks of the file never change.
+
+  - new --du-stats to command to act like the du(1) command, but
+    based on a root in brackup.conf, and skipping ignored directories.
+    good to let you know how big a backup will be.
+
+  - walk directories smarter: jump over directories early which ignore
+    patterns show as never matching.
+
+  - deal w/ encryption better:  tell chunks when the backup target
+    will need data, so it can forget cached digest/backlength
+    ahead of time w/o errors/warnings later.
+
+  - start of stats code (to give stats after a backup).  not done.
+
 0.91 (sep 29 2006)
   - there's now a restore command (brackup-restore)
 

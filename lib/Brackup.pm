@@ -1,14 +1,17 @@
 package Brackup;
 use strict;
 use vars qw($VERSION);
-$VERSION = '0.91';
+$VERSION = '1.00';
 
 use Brackup::Config;
+use Brackup::ConfigSection;
 use Brackup::File;
-use Brackup::DigestDatabase;
+use Brackup::PositionedChunk;
+use Brackup::StoredChunk;
 use Brackup::Backup;
 use Brackup::Root;     # aka "source"
 use Brackup::Restore;
 use Brackup::Target;
+use Brackup::BackupStats;
 
 1;
