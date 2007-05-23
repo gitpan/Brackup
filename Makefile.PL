@@ -4,13 +4,13 @@ use ExtUtils::MakeMaker;
 
 WriteMakefile( NAME            => 'Brackup',
                VERSION_FROM    => 'lib/Brackup.pm',
-               EXE_FILES       => [ 'brackup', 'brackup-restore' ],
+               EXE_FILES       => [ 'brackup', 'brackup-restore', 'brackup-target' ],
                PREREQ_PM       => {
                    'DBD::SQLite'  => 0,
                    'Digest::SHA1' => 0,
                    'DBI'          => 0,
                },
-               ABSTRACT_FROM => 'brackup',
+               ABSTRACT_FROM => 'lib/Brackup.pm',
                AUTHOR     => 'Brad Fitzpatrick <brad@danga.com>',
                );
 

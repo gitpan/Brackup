@@ -20,7 +20,10 @@ brackup-restore - The brackup restore tool.
 
 =item --from=NAME
 
-Required.  The metafile index.  Probably named like "source-YYYYMMDD.brackup"
+Required.  The backup metafile, describing the tree you want to
+restore.  Probably named like "source-YYYYMMDD.brackup".  If you lost
+it, it's also stored on your backup target, and you can fetch it with
+L<brackup-target>.
 
 =item --to=NAME
 
@@ -42,16 +45,14 @@ Restore just the file named.
 
 =head1 WARRANTY
 
-Brackup is distributed as-is and comes without warranty of any kind.
-It'll probably eat your files, kick your cat, and knock up your
-mother.  You've been warned.  If you feel like trusting it with your
-data, why don't you audit it first?
+Brackup is distributed as-is and comes without warranty of any kind,
+expressed or implied.  We aren't responsible for your data loss.
 
 =head1 AUTHOR
 
 Brad Fitzpatrick E<lt>brad@danga.comE<gt>
 
-Copyright (c) 2006 Six Apart, Ltd. All rights reserved.
+Copyright (c) 2006-2007 Six Apart, Ltd. All rights reserved.
 
 This module is free software. You may use, modify, and/or redistribute this
 software under the terms of same terms as perl itself.
@@ -66,6 +67,7 @@ use FindBin qw($Bin);
 use lib "$Bin/lib";
 
 use Brackup;
+use Brackup::Util qw(tempfile);
 
 my ($opt_verbose, $meta_file, $opt_help, $restore_dir, $opt_all, $prefix);
 
@@ -101,6 +103,7 @@ my $restore = Brackup::Restore->new(
                                     to     => $restore_dir,
                                     prefix => $prefix,
                                     file   => $meta_file,
+                                    verbose => $opt_verbose,
                                     );
 
 if (eval { $restore->restore }){

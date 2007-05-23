@@ -3,6 +3,7 @@ package Brackup::Target;
 use strict;
 use warnings;
 use Brackup::InventoryDatabase;
+use Brackup::TargetBackupStatInfo;
 use Carp qw(croak);
 
 sub new {
@@ -57,6 +58,20 @@ sub stored_chunk_from_inventory {
     my $invval = $db->get($key)
         or return undef;
     return Brackup::StoredChunk->new_from_inventory_value($pchunk, $invval);
+}
+
+# return a list of TargetBackupStatInfo objects representing the
+# stored backup metafiles on this target.
+sub backups {
+    my ($self) = @_;
+    die "ERROR: backups method not implemented in sub-class $self";
+}
+
+# downloads the given backup name to the current directory (with
+# *.brackup extension)
+sub get_backup {
+    my ($self, $name) = @_;
+    die "ERROR: get_backup method not implemented in sub-class $self";
 }
 
 1;

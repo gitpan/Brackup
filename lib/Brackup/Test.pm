@@ -8,7 +8,7 @@ use vars qw(@ISA @EXPORT);
 
 use Test::More;
 use FindBin qw($Bin);
-use File::Temp qw(tempdir tempfile);
+use Brackup::Util qw(tempdir tempfile);
 use File::Find;
 use File::stat ();
 use Cwd;
@@ -74,6 +74,7 @@ sub do_backup {
         warn "Died running backup: $@\n";
     }
     ok(-s $meta_filename, "backup file has size");
+
     return wantarray ? ($meta_filename, $backup) : $meta_filename;
 }
 
