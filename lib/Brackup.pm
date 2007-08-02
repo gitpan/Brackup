@@ -1,11 +1,12 @@
 package Brackup;
 use strict;
 use vars qw($VERSION);
-$VERSION = '1.04';
+$VERSION = '1.05';
 
 use Brackup::Config;
 use Brackup::ConfigSection;
 use Brackup::File;
+use Brackup::Metafile;
 use Brackup::PositionedChunk;
 use Brackup::StoredChunk;
 use Brackup::Backup;
