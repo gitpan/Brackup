@@ -6,9 +6,11 @@ use strict;
 use warnings;
 use Carp qw(croak);
 use File::stat ();
-use Fcntl qw(S_ISREG S_ISDIR S_ISLNK);
+use Fcntl qw(S_ISREG S_ISDIR S_ISLNK S_ISFIFO);
 use Digest::SHA1;
 use Brackup::PositionedChunk;
+use Brackup::Chunker::Default;
+use Brackup::Chunker::MP3;
 
 sub new {
     my ($class, %opts) = @_;
@@ -62,17 +64,18 @@ sub is_file {
     return S_ISREG($self->stat->mode);
 }
 
-sub supported_type {
+sub is_fifo {
     my $self = shift;
-    return $self->type ne "";
+    return S_ISFIFO($self->stat->mode);
 }
 
-# returns "f", "l", or "d" like find's -type
+# Returns file type like find's -type
 sub type {
     my $self = shift;
     return "f" if $self->is_file;
     return "d" if $self->is_dir;
     return "l" if $self->is_link;
+    return "p" if $self->is_fifo;
     return "";
 }
 
@@ -88,45 +91,39 @@ sub cachekey {
     return "[" . $self->{root}->name . "]" . $self->{path} . ":" . join(",", $st->ctime, $st->mtime, $st->size, $st->ino);
 }
 
-# iterate over chunks sized by the root's configuration
-sub foreach_chunk {
-    my ($self, $cb) = @_;
-
-    foreach my $chunk ($self->chunks) {
-        $cb->($chunk);
+# Returns the appropriate FileChunker class for the provided file's
+# type.  In most cases this FileChunker will be very dumb, just making
+# equal-sized chunks for, say, 5MB, but in specialized cases (like mp3
+# files), the chunks will be one (or two) small ones for the ID3v1/v2
+# chunks, and one big chunk for the audio bytes (which might be cut
+# into its own small chunks).  This way the mp3 metadata can be
+# changed without needing to back up the entire file again ... just
+# the changed metadata.
+sub file_chunker {
+    my $self = shift;
+    if ($self->{path} =~ /\.mp3$/i && $self->{root}->smart_mp3_chunking) {
+        return "Brackup::Chunker::MP3";
     }
-}
-
-sub _min {
-    return (sort { $a <=> $b } @_)[0];
+    return "Brackup::Chunker::Default";
 }
 
 sub chunks {
     my $self = shift;
+    # memoized:
     return @{ $self->{chunks} } if $self->{chunks};
 
-    my $root = $self->{root};
-    my $chunk_size = $root->chunk_size;
-
     # non-files don't have chunks
-    my @list;
-    if ($self->is_file) {
-        my $offset = 0;
-        my $size   = $self->size;
-        while ($offset < $size) {
-            my $len = _min($chunk_size, $size - $offset);
-            my $chunk = Brackup::PositionedChunk->new(
-                                                      file   => $self,
-                                                      offset => $offset,
-                                                      length => $len,
-                                                      );
-            push @list, $chunk;
-            $offset += $len;
-        }
+    if (!$self->is_file) {
+        $self->{chunks} = [];
+        return ();
     }
 
-    $self->{chunks} = \@list;
-    return @list;
+    # Get the appropriate FileChunker for this file type,
+    # then pass ourselves to it to get our chunks.
+    my @chunk_list = $self->file_chunker->chunks($self);
+
+    $self->{chunks} = \@chunk_list;
+    return @chunk_list;
 }
 
 sub full_digest {
@@ -208,7 +205,7 @@ sub as_rfc822 {
         $set->("Digest", $self->full_digest) if $size;
     } else {
         $set->("Type", $type);
-        if  ($self->is_link) {
+        if ($self->is_link) {
             $set->("Link", $self->link_target);
         }
     }

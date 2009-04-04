@@ -4,6 +4,7 @@ use strict;
 use Brackup::ConfigSection;
 use warnings;
 use Carp qw(croak);
+use Fcntl qw(O_WRONLY O_CREAT O_EXCL);
 
 sub new {
     my ($class) = @_;
@@ -58,7 +59,7 @@ sub load {
 
 sub default_config_file_name {
     my ($class) = @_;
-    
+
     if ($ENV{HOME}) {
         # Default for UNIX folk
         return "$ENV{HOME}/.brackup.conf";
@@ -76,7 +77,7 @@ sub default_config_file_name {
 
 sub write_dummy_config {
     my $file = shift;
-    open (my $fh, ">$file") or return;
+    sysopen (my $fh, $file, O_WRONLY | O_CREAT | O_EXCL, 0600) or return;
     print $fh <<ENDCONF;
 # This is an example config
 
@@ -150,7 +151,7 @@ sub load_target {
     eval "use $class; 1;" or die
         "Failed to load ${name}'s driver: $@\n";
     my $target = $class->new($confsec);
-    
+
     if (my @unk_config = $confsec->unused_config) {
         die "Unknown config params in TARGET:$name: @unk_config\n";
     }

@@ -2,14 +2,17 @@ package Brackup::Target::Amazon;
 use strict;
 use warnings;
 use base 'Brackup::Target';
-use Net::Amazon::S3 0.37;
+use Net::Amazon::S3 0.41;
 
 # fields in object:
 #   s3  -- Net::Amazon::S3
 #   access_key_id
 #   sec_access_key_id
-#   chunk_bucket : $self->{access_key_id} . "-chunks";
-#   backup_bucket : $self->{access_key_id} . "-backups";
+#   prefix
+#   location
+#   chunk_bucket : $self->{prefix} . "-chunks";
+#   backup_bucket : $self->{prefix} . "-backups";
+#   backup_prefix : added to the front of backup names when stored
 #
 
 sub new {
@@ -20,6 +23,9 @@ sub new {
         or die "No 'aws_access_key_id'";
     $self->{sec_access_key_id} = $confsec->value("aws_secret_access_key")
         or die "No 'aws_secret_access_key'";
+    $self->{prefix} = $confsec->value("aws_prefix") || $self->{access_key_id};
+    $self->{location} = $confsec->value("aws_location") || undef;
+    $self->{backup_prefix} = $confsec->value("backup_prefix") || undef;
 
     $self->_common_s3_init;
 
@@ -27,12 +33,12 @@ sub new {
     my $buckets = $s3->buckets or die "Failed to get bucket list";
 
     unless (grep { $_->{bucket} eq $self->{chunk_bucket} } @{ $buckets->{buckets} }) {
-        $s3->add_bucket({ bucket => $self->{chunk_bucket} })
+        $s3->add_bucket({ bucket => $self->{chunk_bucket}, location_constraint => $self->{location} })
             or die "Chunk bucket creation failed\n";
     }
 
     unless (grep { $_->{bucket} eq $self->{backup_bucket} } @{ $buckets->{buckets} }) {
-        $s3->add_bucket({ bucket => $self->{backup_bucket} })
+        $s3->add_bucket({ bucket => $self->{backup_bucket}, location_constraint => $self->{location} })
             or die "Backup bucket creation failed\n";
     }
 
@@ -41,8 +47,8 @@ sub new {
 
 sub _common_s3_init {
     my $self = shift;
-    $self->{chunk_bucket}  = $self->{access_key_id} . "-chunks";
-    $self->{backup_bucket} = $self->{access_key_id} . "-backups";
+    $self->{chunk_bucket}  = $self->{prefix} . "-chunks";
+    $self->{backup_bucket} = $self->{prefix} . "-backups";
     $self->{s3}            = Net::Amazon::S3->new({
         aws_access_key_id     => $self->{access_key_id},
         aws_secret_access_key => $self->{sec_access_key_id},
@@ -66,10 +72,12 @@ sub new_from_backup_header {
         or die "Need your Amazon access key.\n";
     my $sec_accesskey = ($ENV{'AWS_SEC_KEY'} || _prompt("Your Amazon AWS secret access key? "))
         or die "Need your Amazon secret access key.\n";
+    my $prefix = ($ENV{'AWS_PREFIX'} || _prompt("Your Amazon AWS prefix? (Leave empty if none) "));
 
     my $self = bless {}, $class;
     $self->{access_key_id}     = $accesskey;
     $self->{sec_access_key_id} = $sec_accesskey;
+    $self->{prefix}            = $prefix || $self->{access_key_id};
     $self->_common_s3_init;
     return $self;
 }
@@ -138,13 +146,15 @@ sub delete_chunk {
 # returns a list of names of all chunks
 sub chunks {
     my $self = shift;
-    
+
     my $chunks = $self->{s3}->list_bucket_all({ bucket => $self->{chunk_bucket} });
     return map { $_->{key} } @{ $chunks->{keys} };
 }
 
 sub store_backup_meta {
     my ($self, $name, $file) = @_;
+
+    $name = $self->{backup_prefix}."-".$name if defined $self->{backup_prefix};
 
     my $rv = eval { $self->{s3}->add_key({
         bucket        => $self->{backup_bucket},
@@ -172,11 +182,11 @@ sub backups {
 sub get_backup {
     my $self = shift;
     my ($name, $output_file) = @_;
-	
+
     my $bucket = $self->{s3}->bucket($self->{backup_bucket});
     my $val = $bucket->get_key($name)
         or return 0;
-	
+
 	$output_file ||= "$name.brackup";
     open(my $out, ">$output_file") or die "Failed to open $output_file: $!\n";
     my $outv = syswrite($out, $val->{value});
@@ -188,7 +198,7 @@ sub get_backup {
 sub delete_backup {
     my $self = shift;
     my $name = shift;
-	
+
     my $bucket = $self->{s3}->bucket($self->{backup_bucket});
     return $bucket->delete_key($name);
 }
@@ -207,22 +217,50 @@ In your ~/.brackup.conf file:
   type = Amazon
   aws_access_key_id  = ...
   aws_secret_access_key =  ....
+  aws_prefix =  ....
+  backup_prefix =  ....
 
 =head1 CONFIG OPTIONS
+
+All options may be omitted unless specified.
 
 =over
 
 =item B<type>
 
-Must be "B<Amazon>".
+I<(Mandatory.)> Must be "B<Amazon>".
 
 =item B<aws_access_key_id>
 
-Your Amazon Web Services access key id.
+I<(Mandatory.)> Your Amazon Web Services access key id.
 
 =item B<aws_secret_access_key>
 
-Your Amazon Web Services secret password for the above access key.  (not your Amazon password)
+I<(Mandatory.)> Your Amazon Web Services secret password for the above access key.  (not your Amazon password)
+
+=item B<aws_prefix>
+
+If you want to setup multiple backup targets on a single Amazon account you can
+use different prefixes. This string is used to name the S3 buckets created by
+Brackup. If not specified it defaults to the AWS access key id.
+
+=item B<aws_location>
+
+Sets the location constraint of the new buckets. If left unspecified, the
+default S3 datacenter location will be used. Otherwise, you can set it
+to 'EU' for an AWS European data center - note that costs are different.
+This has only effect when your backup environment is initialized in S3 (i.e.
+when buckets are created). If you want to move an existing backup environment
+to another datacenter location, you have to delete its buckets before or create
+a new one by specifing a different I<aws_prefix>.
+
+=item B<backup_prefix>
+
+When storing the backup metadata to S3, the string specified here will be
+prefixed onto the backup name. This is useful if you are collecting
+backups from several hosts into a single Amazon S3 account but need to
+be able to differentiate them; set your prefix to be the hostname
+of each system, for example.
 
 =back
 

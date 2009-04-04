@@ -1,7 +1,7 @@
 package Brackup::Target::Filesystem;
 use strict;
 use warnings;
-use base 'Brackup::Target';
+use base 'Brackup::Target::Filebased';
 use File::Basename;
 use File::Find ();
 use File::Path;
@@ -11,9 +11,12 @@ use File::stat ();
 sub new {
     my ($class, $confsec) = @_;
     my $self = $class->SUPER::new($confsec);
+
     $self->{path} = $confsec->path_value("path");
     $self->{nocolons} = $confsec->value("no_filename_colons");
-    $self->{nocolons} = ($^O eq 'MSWin32') unless defined $self->{nocolons}; # LAME: Make it work on Windows
+
+    # LAME: Make it work on Windows
+    $self->{nocolons} = ($^O eq 'MSWin32') unless defined $self->{nocolons};
 
     # see if we're operating in a pre-1.06 environment
     if (opendir(my $dh, $self->{path})) {
@@ -37,16 +40,23 @@ sub new_from_backup_header {
     my $self = bless {}, $class;
     $self->{path} = $header->{"BackupPath"} or
         die "No BackupPath specified in the backup metafile.\n";
+    $self->{nocolons} = $header->{"NoColons"} or 0;
     unless (-d $self->{path}) {
         die "Restore path $self->{path} doesn't exist.\n";
     }
     return $self;
 }
 
+sub nocolons {
+    my ($self) = @_;
+    return $self->{nocolons};
+}
+
 sub backup_header {
     my $self = shift;
     return {
         "BackupPath" => $self->{path},
+        "NoColons" => $self->{nocolons}?"1":"0",
     };
 }
 
@@ -54,7 +64,7 @@ sub backup_header {
 # (that is, two levels of directories, each 4 hex digits long, or 65536
 # files per directory, which is 2x what ext3 can store, leading to errors.
 # in 1.06 and above, xx/xx/xxxxxx is used.  that is, two levels of 2 hex
-# digits.  this function 
+# digits.  this function
 sub _upgrade_layout {
     my $self = shift;
     my $clean_limit = shift; # optional; if set, max top-level dirs to clean
@@ -82,7 +92,7 @@ sub _upgrade_layout {
 
     # for each 4-digit directory, sorted by number of four-digit directories
     # that exist for their leading 2-digit prefix (to most quickly free up
-    # a link in root, in 2 iterations), 
+    # a link in root, in 2 iterations),
     # see if the "01/" directory exists (the leading two bytes).
     # if not,
     #    move it to some random other 'xxxx' directory,
@@ -177,27 +187,9 @@ sub _old_diskpath {
     my @parts;
     my $fulldig = $dig;
     $dig =~ s/^\w+://; # remove the "hashtype:" from beginning
-    $fulldig =~ s/:/./g if $self->{nocolons}; # Convert colons to dots if we've been asked to
+    $fulldig =~ s/:/./g if $self->nocolons; # Convert colons to dots if we've been asked to
     while (length $dig && @parts < 4) {
         $dig =~ s/^([0-9a-f]{4})// or die "Can't get 4 hex digits of $fulldig";
-        push @parts, $1;
-    }
-    return $self->{path} . "/" . join("/", @parts) . "/$fulldig.chunk";
-}
-
-# version >= 1.06: 01/23/0123456789abcdef...xxx.chunk
-# 256 * 256 directories, then files.  would need 2 billion
-# files before leaves have 32k+ files, but at that point
-# users are probably using better filesystems if they
-# have 2+ inodes.
-sub _new_diskpath {
-    my ($self, $dig) = @_;
-    my @parts;
-    my $fulldig = $dig;
-    $dig =~ s/^\w+://; # remove the "hashtype:" from beginning
-    $fulldig =~ s/:/./g if $self->{nocolons}; # Convert colons to dots if we've been asked to
-    while (length $dig && @parts < 2) {
-        $dig =~ s/^([0-9a-f]{2})// or die "Can't get 2 hex digits of $fulldig";
         push @parts, $1;
     }
     return $self->{path} . "/" . join("/", @parts) . "/$fulldig.chunk";
@@ -217,7 +209,12 @@ sub chunkpath {
 
     # else, use the new (version >= 1.06) location, which
     # is much more sensible
-    return $self->_new_diskpath($dig);
+    return $self->{path} . '/' . $self->SUPER::chunkpath($dig);
+}
+
+sub metapath {
+    my ($self, $name) = @_;
+    return $self->{path} . '/' . $self->SUPER::metapath($name);
 }
 
 sub has_chunk_of_handle {
@@ -235,14 +232,33 @@ sub load_chunk {
     return \$chunk;
 }
 
+sub has_chunk {
+    my ($self, $chunk) = @_;
+    my $dig = $chunk->backup_digest;
+    my $blen = $chunk->backup_length;
+    my $path = $self->chunkpath($dig);
+    my $exist_size = -s $path;
+    if ($exist_size && $exist_size == $blen) {
+        return 1;
+    }
+    return 0;
+}
+
 sub store_chunk {
     my ($self, $chunk) = @_;
     my $dig = $chunk->backup_digest;
     my $blen = $chunk->backup_length;
 
     my $path = $self->chunkpath($dig);
-    my $dir = $path;
-    $dir =~ s!/[^/]+$!!;
+
+    # is it already there?  then do nothing.
+    my $exist_size = -s $path;
+    if ($exist_size && $exist_size == $blen) {
+        return 1;
+    }
+
+    my $dir = dirname($path);
+
     unless (-d $dir) {
         unless (eval { File::Path::mkpath($dir) }) {
             if ($!{EMLINK}) {
@@ -262,11 +278,16 @@ sub store_chunk {
             }
         }
     }
-    open (my $fh, ">$path") or die "Failed to open $path for writing: $!\n";
+
+    my $partial = "$path.partial";
+    open (my $fh, '>', $partial) or die "Failed to open $partial for writing: $!\n";
     binmode($fh);
     my $chunkref = $chunk->chunkref;
     print $fh $$chunkref;
     close($fh) or die "Failed to close $path\n";
+
+    unlink $path;
+    rename $partial, $path or die "Failed to rename $partial to $path: $!\n";
 
     my $actual_size   = -s $path;
     my $expected_size = length $$chunkref;
@@ -290,38 +311,38 @@ sub delete_chunk {
 # returns a list of names of all chunks
 sub chunks {
     my $self = shift;
-    
+
     my @chunks = ();
     my $found_chunk = sub {
         m/\.chunk$/ or return;
         my $chunk_name = basename($_);
         $chunk_name =~ s/\.chunk$//;
+        $chunk_name =~ s/\./:/g if $self->nocolons;
         push @chunks, $chunk_name;
     };
     File::Find::find({ wanted => $found_chunk, no_chdir => 1}, $self->{path});
     return @chunks;
 }
 
-sub _metafile_dir {
-    return $_[0]->{path}."/backups/";
-}
-
 sub store_backup_meta {
-    my ($self, $name, $file) = @_;
-    my $dir = $self->_metafile_dir;
+    my ($self, $name, $content) = @_;
+
+    my $dir = $self->metapath();
     unless (-d $dir) {
         mkdir $dir or die "Failed to mkdir $dir: $!\n";
     }
-    open (my $fh, ">$dir/$name.brackup") or die;
-    print $fh $file;
+
+    open (my $fh, '>', "$dir/$name.brackup") or die;
+    print $fh $content;
     close $fh or die;
+
     return 1;
 }
 
 sub backups {
     my ($self) = @_;
 
-    my $dir = $self->_metafile_dir;
+    my $dir = $self->metapath();
     return () unless -d $dir;
 
     opendir(my $dh, $dir) or
@@ -336,6 +357,7 @@ sub backups {
                                                       size => $stat->size);
     }
     closedir($dh);
+
     return @ret;
 }
 
@@ -343,12 +365,15 @@ sub backups {
 # *.brackup extension) or to the specified location
 sub get_backup {
     my ($self, $name, $output_file) = @_;
-    my $dir  = $self->_metafile_dir;
-    my $file = "$dir/$name.brackup";
+    my $file = $self->metapath("$name.brackup");
+
     die "File doesn't exist: $file" unless -e $file;
-    open(my $in,  $file)            or die "Failed to open $file: $!\n";
-	$output_file ||= "$name.brackup";
-    open(my $out, ">$output_file") or die "Failed to open $output_file: $!\n";
+
+    $output_file ||= "$name.brackup";
+
+    open(my $in,  $file) or die "Failed to open $file: $!\n";
+    open(my $out, '>', $output_file) or die "Failed to open $output_file: $!\n";
+
     my $buf;
     my $rv;
     while ($rv = sysread($in, $buf, 128*1024)) {
@@ -356,6 +381,7 @@ sub get_backup {
         die "copy error" unless $outv == $rv;
     }
     die "copy error" unless defined $rv;
+
     return 1;
 }
 
@@ -363,7 +389,7 @@ sub delete_backup {
     my $self = shift;
     my $name = shift;
 
-    my $file = sprintf '%s/%s.brackup', $self->_metafile_dir, $name;
+    my $file = $self->metapath("$name.brackup");
     die "File doesn't exist: $file" unless -e $file;
     unlink $file;
     return 1;

@@ -4,6 +4,7 @@ use warnings;
 use Carp qw(croak);
 use Digest::SHA1;
 use Brackup::Util qw(tempfile slurp valid_params);
+use POSIX qw(mkfifo);
 
 sub new {
     my ($class, %opts) = @_;
@@ -14,7 +15,7 @@ sub new {
     $self->{file}    = delete $opts{file};    # filename we're restoring from
     $self->{verbose} = delete $opts{verbose};
 
-    $self->{prefix} =~ s!/$!! if $self->{prefix};
+    $self->{prefix} =~ s/\/$// if $self->{prefix};
 
     $self->{_stats_to_run} = [];  # stack (push/pop) of subrefs to reset stat info on
 
@@ -65,19 +66,31 @@ sub restore {
         "Failed to load driver ($driver_class) to restore from: $@\n";
     my $target = eval {"$driver_class"->new_from_backup_header($driver_meta); };
     if ($@) {
-        die "Failed to instantiate target ($driver_class) for restore, perhaps it doesn't support restoring yet?\n\nThe error was: $@";
+        die "Failed to instantiate target ($driver_class) for restore. Perhaps it doesn't support restoring yet?\n\nThe error was: $@";
     }
     $self->{_target} = $target;
     $self->{_meta}   = $meta;
 
+    my $restore_count = 0;
     while (my $it = $parser->readline) {
+        my $type = $it->{Type} || "f";
+        die "Unknown filetype: type=$type, file: $it->{Path}" unless $type =~ /^[ldfp]$/;
+
         if ($self->{prefix}) {
-            next unless $it->{Path} =~ s/^\Q$self->{prefix}\E(?:\/|$)//;
+            next unless $it->{Path} =~ m/^\Q$self->{prefix}\E(?:\/|$)/;
+            # if non-dir and $it->{Path} eq $self->{prefix}, strip all but last component
+            if ($type ne 'd' && $it->{Path} =~ m/^\Q$self->{prefix}\E\/?$/) {
+                if (my ($leading_prefix) = ($self->{prefix} =~ m/^(.*\/)[^\/]+\/?$/)) {
+                    $it->{Path} =~ s/^\Q$leading_prefix\E//;
+                }
+            }
+            else {
+                $it->{Path} =~ s/^\Q$self->{prefix}\E\/?//;
+            }
         }
 
+        $restore_count++;
         my $full = $self->{to} . "/" . $it->{Path};
-        my $type = $it->{Type} || "f";
-        die "Unknown filetype: type=$type, file: $it->{Path}" unless $type =~ /^[ldf]$/;
 
         # restore default modes from header
         $it->{Mode} ||= $meta->{DefaultFileMode} if $type eq "f";
@@ -86,13 +99,19 @@ sub restore {
         warn " * restoring $it->{Path} to $full\n" if $self->{verbose};
         $self->_restore_link     ($full, $it) if $type eq "l";
         $self->_restore_directory($full, $it) if $type eq "d";
+        $self->_restore_fifo     ($full, $it) if $type eq "p";
         $self->_restore_file     ($full, $it) if $type eq "f";
     }
 
-    warn " * fixing stat info\n" if $self->{verbose};
-    $self->_exec_statinfo_updates;
-    warn " * done\n" if $self->{verbose};
-    return 1;
+    if ($restore_count) {
+        warn " * fixing stat info\n" if $self->{verbose};
+        $self->_exec_statinfo_updates;
+        warn " * done\n" if $self->{verbose};
+        return 1;
+    } else {
+        die "nothing found matching '$self->{prefix}'.\n" if $self->{prefix};
+        die "nothing found to restore.\n";
+    }
 }
 
 sub _output_temp_filename {
@@ -116,7 +135,7 @@ sub _decrypt_data {
         my $rcpt = $self->{_meta}{"GPG-Recipient"} or
             return $dataref;
     }
-        
+
     unless ($ENV{'GPG_AGENT_INFO'} ||
             @Brackup::GPG_ARGS ||
             $self->{warned_about_gpg_agent}++)
@@ -163,7 +182,9 @@ sub _update_statinfo {
         }
 
         if ($it->{Mtime} || $it->{Atime}) {
-            utime($it->{Atime}, $it->{Mtime}, $full) or
+            utime($it->{Atime} || $it->{Mtime},
+                  $it->{Mtime} || $it->{Atime},
+                  $full) or
                 die "Failed to change utime of $full: $!";
         }
     };
@@ -203,6 +224,18 @@ sub _restore_link {
         or die "Failed to link";
 }
 
+sub _restore_fifo {
+    my ($self, $full, $it) = @_;
+
+    if (-e $full) {
+        die "Named pipe/fifo $full ($it->{Path}) already exists.  Aborting.";
+    }
+
+    mkfifo($full, $it->{Mode}) or die "mkfifo failed: $!";
+
+    $self->_update_statinfo($full, $it);
+}
+
 sub _restore_file {
     my ($self, $full, $it) = @_;
 
@@ -212,6 +245,7 @@ sub _restore_file {
     }
 
     open (my $fh, ">$full") or die "Failed to open $full for writing";
+    binmode($fh);
     my @chunks = grep { $_ } split(/\s+/, $it->{Chunks} || "");
     foreach my $ch (@chunks) {
         my ($offset, $len, $enc_len, $dig) = split(/;/, $ch);
@@ -252,6 +286,7 @@ sub _restore_file {
         $good_dig = $1;
 
         open (my $readfh, $full) or die "Couldn't reopen file for verification";
+        binmode($readfh);
         my $sha1 = Digest::SHA1->new;
         $sha1->addfile($readfh);
         my $actual_dig = $sha1->hexdigest;
@@ -276,7 +311,7 @@ sub _write_to_file {
     open (my $fh, ">$file") or die "Failed to open $file for writing: $!\n";
     print $fh $$ref;
     close($fh) or die;
-    die unless -s $file == length $$ref;
+    die "Restored file is not of the correct size" unless -s $file == length $$ref;
     return 1;
 }
 

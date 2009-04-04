@@ -1,7 +1,7 @@
 # -*-perl-*-
 
 use strict;
-use Test::More tests => 12;
+use Test::More tests => 10;
 
 use Brackup::Test;
 use FindBin qw($Bin);
@@ -13,7 +13,7 @@ my ($digdb_fh, $digdb_fn) = tempfile();
 close($digdb_fh);
 my $root_dir = "$Bin/data";
 ok(-d $root_dir, "test data to backup exists");
-my $backup_file = do_backup(
+my ($backup_file, $backup, $target) = do_backup(
                             with_confsec => sub {
                                 my $csec = shift;
                                 $csec->add("path",          $root_dir);
@@ -22,9 +22,19 @@ my $backup_file = do_backup(
                             },
                             );
 
-############### Restore
+############### Add an orphan chunk
 
-my $restore_dir = do_restore($backup_file);
+my $orphan_chunks_count = int(rand 10) + 1;
+for (1..$orphan_chunks_count) {
+    my $chunk = Brackup::StoredChunk->new;
+    $chunk->{_chunkref} = \ "foobar $_";
+    $target->store_chunk($chunk);
+}
 
-ok_dirs_match($restore_dir, $root_dir);
+############### Do garbage collection
 
+my $removed_count = eval { $target->gc };
+is($@, '', "gc successful");
+is($removed_count, $orphan_chunks_count, "all orphan chunks removed");
+
+__END__
