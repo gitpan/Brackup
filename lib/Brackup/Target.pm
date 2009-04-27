@@ -112,12 +112,15 @@ sub prune {
         push @{ $backups{$1} }, $backup_name;
     }
     foreach my $source (keys %backups) {
+        next if $opt{source} && $source ne $opt{source};
         my @b = reverse sort @{ $backups{$source} };
         push @backups_to_delete, splice(@b, ($keep_backups > $#b+1) ? $#b+1 : $keep_backups);
     }
 
-    unless ($opt{dryrun}) {
-         $self->delete_backup($_) for @backups_to_delete;
+    warn ($opt{dryrun} ? "Pruning:\n" : "Pruned:\n") if $opt{verbose};
+    foreach my $backup_name (@backups_to_delete) {
+        warn "  $backup_name\n" if $opt{verbose};
+        $self->delete_backup($backup_name) unless $opt{dryrun};
     }
     return scalar @backups_to_delete;
 }
@@ -129,8 +132,14 @@ sub gc {
     # get all chunks and then loop through metafiles to detect
     # referenced ones
     my %chunks = map {$_ => 1} $self->chunks;
+    my $total_chunks = scalar keys %chunks;
     my $tempfile = +(tempfile())[1];
-    BACKUP: foreach my $backup ($self->backups) {
+    my @backups = $self->backups;
+    BACKUP: foreach my $i (0 .. $#backups) {
+        my $backup = $backups[$i];
+        warn sprintf "Collating chunks from backup %s [%d/%d]\n",
+            $backup->filename, $i+1, scalar(@backups) 
+                if $opt{verbose};
         $self->get_backup($backup->filename, $tempfile);
         my $parser = Brackup::Metafile->open($tempfile);
         $parser->readline;  # skip header
@@ -142,11 +151,28 @@ sub gc {
     }
     my @orphaned_chunks = keys %chunks;
 
-    # remove orphaned chunks
-    unless ($opt{dryrun}) {
-         $self->delete_chunk($_) for @orphaned_chunks;
+    # report orphaned chunks
+    if (@orphaned_chunks && $opt{verbose} && $opt{verbose} >= 2) {
+      warn "Orphaned chunks:\n";
+      warn "  $_\n" for (@orphaned_chunks);
     }
-    return scalar @orphaned_chunks;
+
+    # remove orphaned chunks
+    if (@orphaned_chunks && ! $opt{dryrun}) {
+        my $confirm = 'y';
+        if ($opt{interactive}) {
+            printf "Run gc, removing %d/%d orphaned chunks? [y/N] ", 
+              scalar @orphaned_chunks, $total_chunks;
+            $confirm = <>;
+        }
+
+        if (lc substr($confirm,0,1) eq 'y') {
+            warn "Removing orphaned chunks\n" if $opt{verbose};
+            $self->delete_chunk($_) for (@orphaned_chunks);
+        }
+    }
+
+    return wantarray ? ( scalar @orphaned_chunks, $total_chunks ) :  scalar @orphaned_chunks;
 }
 
 

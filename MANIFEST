@@ -45,7 +45,6 @@ HACKING
 Makefile.PL
 MANIFEST			This list of files
 MANIFEST.SKIP
-META.yml			Module meta-data (added by MakeMaker)
 t/00-use.t
 t/01-backup-filesystem.t
 t/01-backup-ftp.t
@@ -53,6 +52,8 @@ t/01-backup-sftp.t
 t/02-gpg.t
 t/03-combine-little-files.t
 t/04-gc-filesystem.t
+t/04-gc-ftp.t
+t/04-gc-sftp.t
 t/data/000-dup1.txt
 t/data/000-dup2.txt
 t/data/huge-file.txt
@@ -63,3 +64,4 @@ t/data/pubring-test.gpg
 t/data/secring-test.gpg
 t/data/test-file.txt
 TODO
+META.yml                                 Module meta-data (added by MakeMaker)
