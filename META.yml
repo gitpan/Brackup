@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                Brackup
-version:             1.08
+version:             1.09
 abstract:            Flexible backup tool.  Slices, dices, encrypts, and sprays across the net.
 license:             ~
 author:              
