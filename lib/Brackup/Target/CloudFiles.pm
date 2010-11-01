@@ -7,7 +7,7 @@ use Date::Parse;
 use Carp qw(croak);
 
 
-eval { require Nets::Mosso::CloudFiles } or die "You need the Net::Mosso::CloudFiles module installed to use the CloudFiles target in brackup.  Please install this module first.\n\n";
+eval { require Net::Mosso::CloudFiles } or die "You need the Net::Mosso::CloudFiles module installed to use the CloudFiles target in brackup.  Please install this module first.\n\n";
 
 # fields in object:
 #   cf  -- Net::Mosso::CloudFiles
@@ -61,13 +61,15 @@ sub _prompt {
 }
 
 sub new_from_backup_header {
-    my ($class, $header) = @_;
+    my ($class, $header, $confsec) = @_;
 
     my $username  = ($ENV{'CF_USERNAME'} || 
+        $confsec->value('cf_username') ||
 		_prompt("Your CloudFiles username: "))
         or die "Need your Cloud Files username.\n";
 
     my $apiKey = ($ENV{'CF_API_KEY'} || 
+        $confsec->value('cf_api_key') ||
 		_prompt("Your CloudFiles api key: "))
         or die "Need your CloudFiles api key.\n";
 
@@ -104,13 +106,14 @@ sub load_chunk {
 sub store_chunk {
     my ($self, $chunk) = @_;
     my $dig = $chunk->backup_digest;
-    my $blen = $chunk->backup_length;
     my $chunkref = $chunk->chunkref;
+
+    my $content = do { local $/; <$chunkref> };
 
 	$self->{chunkContainer}->object(
         name => $dig,
         content_type => 'x-danga/brackup-chunk'
-    )->put($$chunkref);
+    )->put($content);
 
 	return 1;
 }
@@ -131,9 +134,11 @@ sub chunks {
 }
 
 sub store_backup_meta {
-    my ($self, $name, $file) = @_;
+    my ($self, $name, $fh) = @_;
 
-    $self->{backupContainer}->object(name => $name)->put($file);
+    my $content = do { local $/; <$fh> };
+
+    $self->{backupContainer}->object(name => $name)->put($content);
 
 	return 1;
 }

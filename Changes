@@ -1,3 +1,52 @@
+1.10 (2010-10-31)
+
+  - permit 0 as a filename.  https://rt.cpan.org/Ticket/Display.html?id=62004
+
+  - add Riak target, allowing backups to a riak cluster (Gavin Carr)
+
+  - add uid/gid info to metafile, and use in restores (where possible)
+    (Gavin Carr)
+
+  - allow multiple gpg recipients to be specified, any can restore (Alex 
+    Vandiver)
+
+  - if IO::Compress::Gzip is available, write a compressed brackup metafile in
+    unencrypted mode, and handle properly for reads and restores (Gavin Carr)
+
+  - remove orphaned chunks from inventory as part of garbage collection 
+    (Gavin Carr)
+
+  - add simple config section inheritance ('inherit' directive) (Gavin Carr)
+
+  - convert DigestCache from is-a-Dict to has-a-Dict, allow dictionary type
+    to be specified for both DigestCache and InventoryDatabase, add slower/
+    lighter iterator-based Dict::SQLite2, and (test) Dict::Null (Gavin Carr)
+
+  - make encryption and chunk storage use filehandles (where possible)
+    instead of scalar contents (Kostas Chatzikokolakis)
+
+  - update metafile storage to pass filehandle instead of full contents 
+    (Gavin Carr, Kostas Chatzikokolakis)
+
+  - make brackup-restore use brackup.conf target settings, if available 
+    e.g. for passwords (Gavin Carr)
+
+  - sort brackup-restore files to avoid loading composite chunks from
+    target multiple times (Kostas Chatzikokolakis)
+
+  - write metafile as we go, instead of big bang at the end (Gavin Carr)
+
+- add Brackup::BackupStats implementation, brackup stats output, and 
+--save-stats argument (Gavin Carr)
+
+  - fix filename trailing whitespace problems with open (Gavin Carr)
+
+  - add metafile path name escaping using String::Escape (Gavin Carr)
+
+  - add brackup-verify-inventory utility (Gavin Carr)
+
+  - add chunkpath and size methods to Amazon S3 target (Gavin Carr)
+
 1.09 (2009-05-18)
 
   - move all decryption to one place; support decrypting metafiles.
@@ -8,12 +57,12 @@
 
 1.08 (2009-04-26)
 
-  - make brackup-target --verbose prune and gc more verbose (gavincarr)
+  - make brackup-target --verbose prune and gc more verbose (Gavin Carr)
 
-  - add a --interactive option to brackup-target gc (gavincarr) 
+  - add a --interactive option to brackup-target gc (Gavin Carr) 
 
   - add a --source option to brackup-target prune, to restrict a prune 
-    run to a particular source (gavincarr)
+    run to a particular source (Gavin Carr)
    
   - update Amazon target to handle new ISO8601 modify timestamps (Ben 
     Schumacher)

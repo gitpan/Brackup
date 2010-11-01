@@ -13,6 +13,7 @@ use File::Find;
 use File::stat ();
 use Cwd;
 use Brackup::DecryptedFile;
+use Digest::SHA1 qw/sha1_hex/;
 
 use Brackup;
 
@@ -22,15 +23,19 @@ my @to_unlink;
 my $par_pid = $$;
 END {
     if ($$ == $par_pid) {
-        my $rv = unlink @to_unlink;
+        my $rv = unlink @to_unlink unless $ENV{BRACKUP_TEST_NOCLEANUP};
     }
 }
+
+# Set the gpg directory, so we don't rely on users having a ~/.gnupg
+$ENV{GNUPGHOME} = tempdir( CLEANUP => 1 );
 
 sub do_backup {
     my %opts = @_;
     my $with_confsec    = delete $opts{'with_confsec'} || sub {};
     my $with_targetsec  = delete $opts{'with_targetsec'} || sub {};
     my $with_root       = delete $opts{'with_root'}    || sub {};
+    my $target          = delete $opts{'with_target'};
     die if %opts;
 
     my $initer = shift;
@@ -46,27 +51,30 @@ sub do_backup {
     ok($root, "have a source root");
     $with_root->($root);
 
-    my $backup_dir = tempdir( CLEANUP => 1 );
-    ok_dir_empty($backup_dir);
+    unless ($target) {
+        my $backup_dir = tempdir( CLEANUP => $ENV{BRACKUP_TEST_NOCLEANUP} ? 0 : 1 );
+        ok_dir_empty($backup_dir);
 
-    my ($inv_fh, $inv_filename) = tempfile();
-    close($inv_fh);
-    push @to_unlink, $inv_filename;
+        my ($inv_fh, $inv_filename) = tempfile();
+        close($inv_fh);
+        push @to_unlink, $inv_filename;
 
 
-    $confsec = Brackup::ConfigSection->new("TARGET:test_restore");
-    $with_targetsec->($confsec);
-    $confsec->add("type" => "Filesystem") unless exists $confsec->{type};
-    $confsec->add("inventory_db" => $inv_filename);
-    $confsec->add("path" => $backup_dir);
-    $conf->add_section($confsec);
+        $confsec = Brackup::ConfigSection->new("TARGET:test_restore");
+        $with_targetsec->($confsec);
+        $confsec->add("type" => "Filesystem") unless exists $confsec->{type};
+        $confsec->add("inventorydb_file" => $inv_filename);
+        $confsec->add("path" => $backup_dir);
+        $conf->add_section($confsec);
+        $target = $conf->load_target("test_restore", testmode => 1);
+    }
 
-    my $target = $conf->load_target("test_restore");
     ok($target, "have a target ($target)");
 
     my $backup = Brackup::Backup->new(
-                                      root    => $root,
-                                      target  => $target,
+                                      root      => $root,
+                                      target    => $target,
+                                      savefiles => 1,
                                       );
     ok($backup, "have a backup object");
 
@@ -80,7 +88,51 @@ sub do_backup {
     }
     ok(-s $meta_filename, "backup file has size");
 
+    check_inventory_db($target, [$root->gpg_args]);
+
     return wantarray ? ($meta_filename, $backup, $target) : $meta_filename;
+}
+
+sub check_inventory_db {
+    my ($target, $gpg_args) = @_;
+
+    my $inv_db_file;
+    eval {
+        my $inv_db = $target->inventory_db                      or die 'cannot open inventory db';
+        $inv_db_file = $inv_db->backing_file ? (' ' . $inv_db->backing_file) : '';
+
+        while (my ($key, $value) = $inv_db->each) {
+            my ($raw_dig, $gpg_rcpt) = split /;/, $key;
+            my ($enc_dig, $enc_size, $range) = split /\s+/, $value;
+
+            # check the stored data
+            my $dataref = $target->load_chunk($enc_dig)         or die "cannot load chunk $enc_dig";
+            length $$dataref == $enc_size                       or die "chunk $enc_dig has wrong size, not $enc_size";
+            $enc_dig eq "sha1:".sha1_hex($$dataref)             or die "chunk $enc_dig has wrong digest";
+ 
+            # if we are in a composite chunk, keep only the part we want
+            if($range) {
+                my ($from, $to) = split '-', $range;
+                my $part = substr $$dataref, $from, $to-$from;
+                $dataref = \$part;
+            }
+
+            # decrypt if encrypted
+            my $dec_ref;
+            if($gpg_rcpt =~ /^to=(.*)$/) {
+                my $meta = { 'GPG-Recipient' => $1 };
+                local @Brackup::GPG_ARGS = @$gpg_args;
+
+                $dec_ref = Brackup::Decrypt::decrypt_data($dataref, meta => $meta);
+            } else {
+                $dec_ref = $dataref;
+            }
+
+            # check the raw data
+            $raw_dig eq "sha1:".sha1_hex($$dec_ref)       or die "chunk $enc_dig has wrong raw digest";
+        }
+    };
+    ok(!$@, "inventory db$inv_db_file is good")   or diag($@);
 }
 
 sub do_restore {
@@ -88,7 +140,7 @@ sub do_restore {
     my $prefix     = delete $opts{'prefix'} || "";   # default is restore everything
     my $restore_should_die = delete $opts{'restore_should_die'};
     die if %opts;
-    my $restore_dir = tempdir( CLEANUP => 1 );
+    my $restore_dir = tempdir( CLEANUP => $ENV{BRACKUP_TEST_NOCLEANUP} ? 0 : 1 );
     ok_dir_empty($restore_dir);
 
     my $restore = Brackup::Restore->new(
@@ -196,6 +248,28 @@ sub dir_structure {
 
     chdir($cwd) or die "Failed to chdir back to $cwd";
     return \%files;
+}
+
+# add a random number of orphan chunks to $target
+sub add_orphan_chunks {
+    my ($root, $target, $orphan_chunks_count) = @_;
+
+    for (1..$orphan_chunks_count) {
+        # HACK: to avoid worse hacks, we need a pchunk to store an orphan chunk.
+        # We use small segments of 'pubring-test.gpg' so that they are different 
+        # than all other chunks
+        my $pchunk = Brackup::PositionedChunk->new(
+            file => Brackup::File->new(root => $root,
+                                       path => 'pubring-test.gpg'),
+            offset => $_ * 10,
+            length => 10,
+        );
+
+        # no encryption, copy raw data and store schunk
+        my $schunk = Brackup::StoredChunk->new($pchunk);
+#       $schunk->copy_raw_data;
+        $target->store_chunk($schunk);
+    }
 }
 
 

@@ -11,20 +11,30 @@ use Carp qw(croak);
 sub new {
     my ($class, $confsec) = @_;
     my $self = bless {}, $class;
-    my $name = $confsec->name;
-    $name =~ s!^TARGET:!! or die;
+    $self->{name} = $confsec->name;
+    $self->{name} =~ s/^TARGET://
+        or die "No target found matching " . $confsec->name;
+    die "Target name must be only a-z, A-Z, 0-9, and _." 
+        unless $self->{name} =~ /^\w+/;
 
     $self->{keep_backups} = $confsec->value("keep_backups");
     $self->{inv_db} =
-        Brackup::InventoryDatabase->new($confsec->value("inventory_db") ||
-                                        "$ENV{HOME}/.brackup-target-$name.invdb");
+        Brackup::InventoryDatabase->new($confsec->value("inventorydb_file") ||
+                                        $confsec->value("inventory_db") ||
+                                        "$ENV{HOME}/.brackup-target-$self->{name}.invdb",
+                                        $confsec);
 
     return $self;
 }
 
+sub name {
+    my $self = shift;
+    return $self->{name};
+}
+
 # return hashref of key/value pairs you want returned to you during a restore
 # you should include anything you need to restore.
-# keys should only contain \w
+# keys must match /^\w+$/
 sub backup_header {
     return {}
 }
@@ -171,6 +181,13 @@ sub gc {
         if (lc substr($confirm,0,1) eq 'y') {
             warn "Removing orphaned chunks\n" if $opt{verbose};
             $self->delete_chunk($_) for (@orphaned_chunks);
+
+            # delete orphaned chunks from inventory
+            my $inventory_db = $self->inventory_db;
+            while (my ($k, $v) = $inventory_db->each) {
+                $v =~ s/ .*$//;         # strip value back to hash
+                $inventory_db->delete($k) if exists $chunks{$v};
+            }
         }
     }
 
@@ -202,17 +219,76 @@ In your ~/.brackup.conf file:
 
 =item B<type>
 
-The driver for this target type.  The type B<Foo> corresponds to the Perl module Brackup::Target::B<Foo>.
+The driver for this target type.  The type B<Foo> corresponds to the Perl module 
+Brackup::Target::B<Foo>.
 
-As such, the only valid options for type, if you're just using the
-Target modules that come with the Brackup core, are:
-
-B<Amazon> -- see L<Brackup::Target::Amazon> for configuration details
+The set of targets (and the valid options for type) currently distributed with the
+Brackup core are:
 
 B<Filesystem> -- see L<Brackup::Target::Filesystem> for configuration details
 
+B<Ftp> -- see L<Brackup::Target::Ftp> for configuration details
+
+B<Sftp> -- see L<Brackup::Target::Sftp> for configuration details
+
+B<Amazon> -- see L<Brackup::Target::Amazon> for configuration details
+
+B<Amazon> -- see L<Brackup::Target::CloudFiles> for configuration details
+
 =item B<keep_backups>
 
-The number of recent backups to keep when running I<brackup-target prune>.
+The default number of recent backups to keep when running I<brackup-target prune>.
+
+=item B<inventorydb_file>
+
+The location of the L<Brackup::InventoryDatabase> inventory database file for 
+this target e.g.
+
+  [TARGET:amazon]
+  type = Amazon
+  aws_access_key_id  = ...
+  aws_secret_access_key =  ...
+  inventorydb_file = /home/bradfitz/.amazon-already-has-these-chunks.db
+
+Only required if you wish to change this from the default, which is 
+".brackup-target-TARGETNAME.invdb" in your home directory.
+
+=item B<inventorydb_type>
+
+Dictionary type to use for the inventory database. The dictionary type B<Bar>
+corresponds to the perl module Brackup::Dict::B<Bar>.
+
+The default inventorydb_type is B<SQLite>. See L<Brackup::InventoryDatabase> for 
+more.
+
+=item B<inherit>
+
+The name of another Brackup::Target section to inherit from i.e. to use 
+for any parameters that are not already defined in the current section e.g.:
+
+  [TARGET:ftp_defaults]
+  type = Ftp
+  ftp_host = myserver
+  ftp_user = myusername
+  ftp_password = mypassword
+
+  [TARGET:ftp_home]
+  inherit = ftp_defaults
+  path = home
+
+  [TARGET:ftp_images]
+  inherit = ftp_defaults
+  path = images
 
 =back
+
+=head1 SEE ALSO
+
+L<Brackup>
+
+L<Brackup::InventoryDatabase>
+
+=cut
+
+# vim:sw=4:et
+

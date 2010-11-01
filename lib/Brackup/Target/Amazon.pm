@@ -2,7 +2,7 @@ package Brackup::Target::Amazon;
 use strict;
 use warnings;
 use base 'Brackup::Target';
-use Net::Amazon::S3 0.41;
+use Net::Amazon::S3 0.42;
 use DateTime::Format::ISO8601;
 
 # fields in object:
@@ -53,6 +53,7 @@ sub _common_s3_init {
     $self->{s3}            = Net::Amazon::S3->new({
         aws_access_key_id     => $self->{access_key_id},
         aws_secret_access_key => $self->{sec_access_key_id},
+        retry                 => 1,
     });
 }
 
@@ -66,14 +67,33 @@ sub _prompt {
     return $ans;
 }
 
-sub new_from_backup_header {
-    my ($class, $header) = @_;
+# Location and backup_prefix aren't required for restores, so they're omitted here
+sub backup_header {
+    my ($self) = @_;
+    return {
+        "AWSAccessKeyID"    => $self->{access_key_id},
+        "AWSPrefix"         => $self->{prefix},
+    };
+}
 
-    my $accesskey     = ($ENV{'AWS_KEY'} || _prompt("Your Amazon AWS access key? "))
+# Location and backup_prefix aren't required for restores, so they're omitted here
+sub new_from_backup_header {
+    my ($class, $header, $confsec) = @_;
+
+    my $accesskey     = ($ENV{'AWS_KEY'} || 
+                         $ENV{'AWS_ACCESS_KEY_ID'} ||
+                         $header->{AWSAccessKeyID} || 
+                         $confsec->value('aws_access_key_id') || 
+                         _prompt("Your Amazon AWS access key? "))
         or die "Need your Amazon access key.\n";
-    my $sec_accesskey = ($ENV{'AWS_SEC_KEY'} || _prompt("Your Amazon AWS secret access key? "))
+    my $sec_accesskey = ($ENV{'AWS_SEC_KEY'} || 
+                         $ENV{'AWS_ACCESS_KEY_SECRET'} ||
+                         $confsec->value('aws_secret_access_key') || 
+                         _prompt("Your Amazon AWS secret access key? "))
         or die "Need your Amazon secret access key.\n";
-    my $prefix = ($ENV{'AWS_PREFIX'} || _prompt("Your Amazon AWS prefix? (Leave empty if none) "));
+    my $prefix        = ($ENV{'AWS_PREFIX'} || 
+                         $header->{AWSPrefix} ||
+                         $confsec->value('aws_prefix'));
 
     my $self = bless {}, $class;
     $self->{access_key_id}     = $accesskey;
@@ -106,15 +126,15 @@ sub load_chunk {
 sub store_chunk {
     my ($self, $chunk) = @_;
     my $dig = $chunk->backup_digest;
-    my $blen = $chunk->backup_length;
-    my $chunkref = $chunk->chunkref;
+    my $fh = $chunk->chunkref;
+    my $chunkref = do { local $/; <$fh> };
 
     my $try = sub {
         eval {
             $self->{s3}->add_key({
                 bucket        => $self->{chunk_bucket},
                 key           => $dig,
-                value         => $$chunkref,
+                value         => $chunkref,
                 content_type  => 'x-danga/brackup-chunk',
             });
         };
@@ -153,18 +173,18 @@ sub chunks {
 }
 
 sub store_backup_meta {
-    my ($self, $name, $file) = @_;
+    my ($self, $name, $fh, $meta) = @_;
 
-    $name = $self->{backup_prefix}."-".$name if defined $self->{backup_prefix};
+    $name = $self->{backup_prefix} . "-" . $name if defined $self->{backup_prefix};
 
-    my $rv = eval { $self->{s3}->add_key({
-        bucket        => $self->{backup_bucket},
-        key           => $name,
-        value         => $file,
-        content_type  => 'x-danga/brackup-meta',
-    })};
-
-    return $rv;
+    eval { 
+        my $bucket = $self->{s3}->bucket($self->{backup_bucket}); 
+        $bucket->add_key_filename(
+            $name,
+            $meta->{filename},
+            { content_type => 'x-danga/brackup-meta' },
+        );
+    };
 }
 
 sub backups {
@@ -203,6 +223,24 @@ sub delete_backup {
 
     my $bucket = $self->{s3}->bucket($self->{backup_bucket});
     return $bucket->delete_key($name);
+}
+
+sub chunkpath {
+    my $self = shift;
+    my $dig = shift;
+
+    return $dig;
+}
+
+sub size {
+    my $self = shift;
+    my $dig = shift;
+
+    my $res = eval { $self->{s3}->head_key({ bucket => $self->{chunk_bucket}, key => $dig }); };
+    return 0 unless $res;
+    return 0 if $@ && $@ =~ /key not found/;
+    return 0 unless $res->{content_type} eq "x-danga/brackup-chunk";
+    return $res->{content_length};
 }
 
 1;
@@ -258,8 +296,8 @@ a new one by specifing a different I<aws_prefix>.
 
 =item B<backup_prefix>
 
-When storing the backup metadata to S3, the string specified here will be
-prefixed onto the backup name. This is useful if you are collecting
+When storing the backup metadata file to S3, the string specified here will 
+be prefixed onto the backup name. This is useful if you are collecting
 backups from several hosts into a single Amazon S3 account but need to
 be able to differentiate them; set your prefix to be the hostname
 of each system, for example.

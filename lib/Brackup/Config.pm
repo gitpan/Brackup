@@ -16,6 +16,11 @@ sub add_section {
     $self->{$sec->name} = $sec;
 }
 
+sub get_section {
+    my ($self, $name) = @_;
+    return $self->{$name};
+}
+
 sub load {
     my ($class, $file) = @_;
     $file ||= Brackup::Config->default_config_file_name;
@@ -30,6 +35,7 @@ sub load {
         }
     };
     my $sec = undef;
+    my %inherit = ();
     while (my $line = <$fh>) {
         $line =~ s/^\#.*//;   # kill comments starting at beginning of line
         $line =~ s/\s\#.*//;   # kill comments with whitespace before the # (motivation: let # be in regexps)
@@ -44,7 +50,11 @@ sub load {
             $self->{$name} = $sec;
         } elsif ($line =~ /^(\w+)\s*=\s*(.+)/) {
             die "Declaration of '$1' outside of a section." unless $sec;
-            $sec->add($1, $2);
+            if ($1 eq 'inherit') {
+              $inherit{$sec->name} = $2;
+            } else {
+              $sec->add($1, $2);
+            }
         } else {
             die "Bogus config line: $line";
         }
@@ -52,6 +62,23 @@ sub load {
 
     unless ($sec) {
         die "Your config file needs tweaking.  There's a starting template at: $file\n";
+    }
+
+    # Config section inheritance
+    my $loop_count = 0;
+    while (keys %inherit) {
+      for my $child_sec (keys %inherit) {
+        # If this parent_sec itself inherits from something else, defer this time around
+        next if exists $inherit{ $inherit{$child_sec} };
+
+        my $parent_sec = delete $inherit{$child_sec};
+        # If missing, derive prefix ([SOURCE|TARGET]:) from section name
+        $parent_sec = (split /:/, $child_sec, 2)[0] . ':' . $parent_sec
+          if $parent_sec !~ m/:/;
+        die "Cannot inherit from unknown section '$parent_sec'." unless $self->{$parent_sec};
+        $self->inherit_from($self->{$parent_sec}, $self->{$child_sec});
+      }
+      die "Inheritance chain too long - looping?" if ++$loop_count > 20;
     }
 
     return $self;
@@ -137,14 +164,27 @@ sub load_root {
     return $root;
 }
 
+sub list_sources {
+    my ($self) = @_;
+    return sort map { s/^SOURCE://; $_ } grep(/^SOURCE:/, keys %$self);
+}
+
+sub list_targets {
+    my ($self) = @_;
+    return sort map { s/^TARGET://; $_ } grep(/^TARGET:/, keys %$self);
+}
+
 sub load_target {
-    my ($self, $name) = @_;
+    my ($self, $name, %opts) = @_;
+    my $testmode = delete $opts{testmode};
+    croak("Unknown options: " . join(', ', keys %opts)) if %opts;
+
     my $confsec = $self->{"TARGET:$name"} or
         die "Unknown target '$name'\n";
 
     my $type = $confsec->value("type") or
         die "Target '$name' has no 'type'";
-    die "Invalid characters in $name's 'type'"
+    die "Invalid characters in ${name}'s 'type'"
         unless $type =~ /^\w+$/;
 
     my $class = "Brackup::Target::$type";
@@ -153,9 +193,20 @@ sub load_target {
     my $target = $class->new($confsec);
 
     if (my @unk_config = $confsec->unused_config) {
-        die "Unknown config params in TARGET:$name: @unk_config\n";
+        die "Unknown config params in TARGET:$name: @unk_config\n"
+             unless $testmode;
     }
     return $target;
+}
+
+# Copy all keys in $parent_sec that don't exist in $child_sec
+sub inherit_from {
+    my ($self, $parent_sec, $child_sec) = @_;
+
+    for my $key ($parent_sec->keys) {
+      next if $child_sec->values($key);
+      $child_sec->add($key, $_) foreach $parent_sec->values($key);
+    }
 }
 
 1;

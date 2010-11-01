@@ -6,8 +6,9 @@ use strict;
 use warnings;
 use Carp qw(croak);
 use File::stat ();
-use Fcntl qw(S_ISREG S_ISDIR S_ISLNK S_ISFIFO);
+use Fcntl qw(S_ISREG S_ISDIR S_ISLNK S_ISFIFO O_RDONLY);
 use Digest::SHA1;
+use String::Escape qw(printable);
 use Brackup::PositionedChunk;
 use Brackup::Chunker::Default;
 use Brackup::Chunker::MP3;
@@ -22,7 +23,7 @@ sub new {
     croak("Unknown options: " . join(', ', keys %opts)) if %opts;
 
     die "No root object provided." unless $self->{root} && $self->{root}->isa("Brackup::Root");
-    die "No path provided." unless $self->{path};
+    die "No path provided." unless defined($self->{path});  # note: permit "0"
     $self->{path} =~ s!^\./!!;
 
     return $self;
@@ -152,7 +153,7 @@ sub _calc_full_digest {
     unless ($dig) {
         my $sha1 = Digest::SHA1->new;
         my $path = $self->fullpath;
-        open (my $fh, $path) or die "Couldn't open $path: $!\n";
+        sysopen(my $fh, $path, O_RDONLY) or die "Failed to open $path: $!";
         binmode($fh);
         $sha1->addfile($fh);
         close($fh);
@@ -187,6 +188,16 @@ sub mode {
     return sprintf('%#o', $self->stat->mode & 0777);
 }
 
+sub uid {
+    my $self = shift;
+    return $self->stat->uid;
+}
+
+sub gid {
+    my $self = shift;
+    return $self->stat->gid;
+}
+
 sub as_rfc822 {
     my ($self, $schunk_list, $backup) = @_;
     my $ret = "";
@@ -197,7 +208,7 @@ sub as_rfc822 {
     };
     my $st = $self->stat;
 
-    $set->("Path", $self->{path});
+    $set->("Path", printable($self->{path}));
     my $type = $self->type;
     if ($self->is_file) {
         my $size = $self->size;
@@ -220,6 +231,15 @@ sub as_rfc822 {
                 ($type eq "f" && $mode eq $backup->default_file_mode)) {
             $set->("Mode", $mode);
         }
+    }
+
+    my $uid = $self->uid;
+    unless ($uid eq $backup->default_uid) {
+      $set->("UID", $uid);
+    }
+    my $gid = $self->gid;
+    unless ($gid eq $backup->default_gid) {
+      $set->("GID", $gid);
     }
 
     return $ret . "\n";

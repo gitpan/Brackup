@@ -22,12 +22,13 @@ sub new {
 }
 
 sub new_from_backup_header {
-    my ($class, $header) = @_;
+    my ($class, $header, $confsec) = @_;
     my $self = bless {}, $class;
 
     $self->{ftp_host} = $ENV{FTP_HOST} || $header->{'FtpHost'};
     $self->{ftp_user} = $ENV{FTP_USER} || $header->{'FtpUser'};
-    $self->{ftp_password} = $ENV{FTP_PASSWORD} or
+    $self->{ftp_password} = $ENV{FTP_PASSWORD} || 
+                            $confsec->value('ftp_password') or
         die "FTP_PASSWORD missing in environment";
     $self->{path} = $header->{'BackupPath'} or
         die "No BackupPath specified in the backup metafile.\n";
@@ -114,22 +115,28 @@ sub _mdtm {
     return $mtime;
 }
 
-sub _put {
-    my ($self, $path, $content) = @_;
-    my $dir = dirname($path);
+sub _put_fh {
+    my ($self, $path, $fh) = @_;
+
+    # Ugly-hack: monkey-patch IO::InnerFile to provide BINMODE for Net::FTP::put
+    *{IO::InnerFile::BINMODE} = sub { $_[0]->binmode }
+      if $fh->isa('IO::InnerFile');
 
     # Make sure directory exists.
+    my $dir = dirname($path);
     $self->_autoretry(sub {
         return $self->{ftp}->mkdir($dir, 1)
     }) or die "Creating directory $dir failed: " . $self->{ftp}->message;
 
     $self->_autoretry(sub {
-        open(my $fh, '<', \$content) or die $!;
-        binmode($fh);
-        my $result = $self->{ftp}->put($fh, $path);
-        close($fh) or die "Failed to close";
-        return $result;
+        $self->{ftp}->put($fh, $path);
     }) or die "Writing file $path failed: " . $self->{ftp}->message;
+}
+
+sub _put_chunk {
+    my ($self, $path, $content) = @_;
+    open(my $fh, '<', \$content) or die $!;
+    $self->_put_fh($path, $fh);
 }
 
 sub _get {
@@ -184,11 +191,10 @@ sub store_chunk {
     my $dig = $chunk->backup_digest;
     my $path = $self->chunkpath($dig);
 
-    my $chunkref = $chunk->chunkref;
-    $self->_put($path, $$chunkref);
+    $self->_put_fh($path, $chunk->chunkref);
 
     my $actual_size = $self->size($path);
-    my $expected_size = length $$chunkref;
+    my $expected_size = $chunk->backup_length;
     unless ($actual_size == $expected_size) {
         die "Chunk $path incompletely written to disk: size is " .
             "$actual_size, expecting $expected_size\n";
@@ -225,8 +231,8 @@ sub chunks {
 }
 
 sub store_backup_meta {
-    my ($self, $name, $content) = @_;
-    $self->_put($self->metapath("$name.brackup"), $content);
+    my ($self, $name, $fh) = @_;
+    $self->_put_fh($self->metapath("$name.brackup"), $fh);
     return 1;
 }
 

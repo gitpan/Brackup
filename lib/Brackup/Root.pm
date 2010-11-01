@@ -4,7 +4,7 @@ use warnings;
 use Carp qw(croak);
 use File::Find;
 use Brackup::DigestCache;
-use Brackup::Util qw(tempfile);
+use Brackup::Util qw(io_print_to_fh);
 use IPC::Open2;
 use Symbol;
 
@@ -18,7 +18,7 @@ sub new {
 
     $self->{dir}        = $conf->path_value('path');
     $self->{gpg_path}   = $conf->value('gpg_path') || "gpg";
-    $self->{gpg_rcpt}   = $conf->value('gpg_recipient');
+    $self->{gpg_rcpt}   = [ $conf->values('gpg_recipient') ];
     $self->{chunk_size} = $conf->byte_value('chunk_size');
     $self->{ignore}     = [];
 
@@ -53,9 +53,9 @@ sub gpg_args {
     return @{ $self->{gpg_args} };
 }
 
-sub gpg_rcpt {
+sub gpg_rcpts {
     my $self = shift;
-    return $self->{gpg_rcpt};
+    return @{ $self->{gpg_rcpt} };
 }
 
 # returns Brackup::DigestCache object
@@ -114,14 +114,15 @@ sub foreach_file {
                 # skip the digest database file.  not sure if this is smart or not.
                 # for now it'd be kinda nice to have, but it's re-creatable from
                 # the backup meta files later, so let's skip it.
-                next if $path eq $self->{digcache_file};
+                next if $self->{digcache_file} && $path eq $self->{digcache_file};
 
+                # GC: seems to work fine as of at least gpg 1.4.5, so commenting out
                 # gpg seems to barf on files ending in whitespace, blowing
                 # stuff up, so we just skip them instead...
-                if ($path =~ /\s+$/) {
-                    warn "Skipping file ending in whitespace: <$path>\n";
-                    next;
-                }
+                #if ($self->gpg_rcpts && $path =~ /\s+$/) {
+                #    warn "Skipping file ending in whitespace: <$path>\n";
+                #    next;
+                #}
 
                 my $statobj = File::stat::lstat($path);
                 my $is_dir = -d _;
@@ -129,6 +130,7 @@ sub foreach_file {
                 foreach my $pattern (@{ $self->{ignore} }) {
                     next DENTRY if $path =~ /$pattern/;
                     next DENTRY if $is_dir && "$path/" =~ /$pattern/;
+                    next DENTRY if $path =~ m!(^|/)\.brackup-digest\.db(-journal)?$!;
                 }
 
                 $statcache{$path} = $statobj;
@@ -198,46 +200,37 @@ sub du_stats {
     $pop_dir->() while @dir_stack;
 }
 
-# given data (scalar or scalarref), returns encrypted data
+# given filehandle to data, returns encrypted data
 sub encrypt {
-    my ($self, $data) = @_;
-    my $gpg_rcpt = $self->gpg_rcpt
+    my ($self, $data_fh, $outfn) = @_;
+    my @gpg_rcpts = $self->gpg_rcpts
         or Carp::confess("Encryption not setup for this root");
-
-    $data = \$data unless ref $data;
-
-    my ($tmpfh, $tmpfn) = tempfile();
-    print $tmpfh $$data
-        or die "failed to print: $!";
-    close $tmpfh
-        or die "failed to close: $!\n";
-    Carp::confess("size not right")
-        unless -s $tmpfn == length $$data;
 
     my $cout = Symbol::gensym();
     my $cin = Symbol::gensym();
 
+    my @recipients = map {("--recipient", $_)} @gpg_rcpts;
     my $pid = IPC::Open2::open2($cout, $cin,
         $self->gpg_path, $self->gpg_args,
-        "--recipient", $gpg_rcpt,
+        @recipients,
         "--trust-model=always",
         "--batch",
         "--encrypt",
-        "--output=-",  # Send output to stdout
+        "--output", $outfn,
         "--yes",
-        $tmpfn
+        "-"                 # read from stdin
     );
 
-    binmode $cout;
+    # send data to gpg
+    binmode $cin;
+    my $bytes = io_print_to_fh($data_fh, $cin)
+      or die "Sending data to gpg failed: $!";
 
-    my $ret = do { local $/; <$cout>; };
+    close $cin;
+    close $cout;
 
     waitpid($pid, 0);
     die "GPG failed: $!" if $? != 0; # If gpg return status is non-zero
-
-    unlink($tmpfn);
-
-    return $ret;
 }
 
 1;
@@ -311,5 +304,25 @@ Boolean parameter.  Set to one of {on,yes,true,1} to make mp3 files
 chunked along their metadata boundaries.  If a file has both ID3v1 and
 ID3v2 chunks, the file will be cut into three parts: two little ones
 for the ID3 tags, and one big one for the music bytes.
+
+=item B<inherit>
+
+The name of another Brackup::Root section to inherit from i.e. to use 
+for any parameters that are not already defined in the current section.
+The example above could also be written:
+
+  [SOURCE:defaults]
+  chunk_size = 64MB
+  noatime = 0
+
+  [SOURCE:bradhome]
+  inherit = defaults
+  path = /home/bradfitz/
+  gpg_recipient = 5E1B3EC5
+  ignore = ^\.thumbnails/
+  ignore = ^\.kde/share/thumbnails/
+  ignore = ^\.ee/(minis|icons|previews)/
+  ignore = ^build/
+  noatime = 1
 
 =back

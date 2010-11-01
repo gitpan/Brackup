@@ -3,16 +3,18 @@ package Brackup::CompositeChunk;
 use strict;
 use warnings;
 use Carp qw(croak);
-use Digest::SHA1 qw(sha1_hex);
+use Fcntl qw(SEEK_SET);
+use Brackup::Util qw(tempfile_obj io_sha1 io_print_to_fh); 
 
 use fields (
             'used_up',
             'max_size',
-            'data',
             'target',
             'digest',  # memoized
             'finalized', # if we've written ourselves to the target yet
             'subchunks', # the chunks this composite chunk is made of
+            'sha1',         # Digest::SHA1 object
+            '_chunk_fh',  # tempfile file containing the whole composite chunk
             );
 
 sub new {
@@ -21,9 +23,10 @@ sub new {
     $self->{used_up}   = 0; # bytes
     $self->{finalized} = 0; # false
     $self->{max_size}  = $root->max_composite_size;
-    $self->{data}      = '';
     $self->{target}    = $target;
     $self->{subchunks} = [];
+    $self->{sha1}      = Digest::SHA1->new;
+    $self->{_chunk_fh} = tempfile_obj();
     return $self;
 }
 
@@ -33,9 +36,8 @@ sub append_little_chunk {
 
     my $from = $self->{used_up};
     $self->{used_up} += $schunk->backup_length;
-    $self->{data}    .= ${ $schunk->chunkref };
+    io_print_to_fh($schunk->chunkref, $self->{_chunk_fh}, $self->{sha1});
     my $to = $self->{used_up};
-    die "ASSERT" unless CORE::length($self->{data}) == $self->{used_up};
 
     $schunk->set_composite_chunk($self, $from, $to);
     push @{$self->{subchunks}}, $schunk;
@@ -43,7 +45,7 @@ sub append_little_chunk {
 
 sub digest {
     my $self = shift;
-    return $self->{digest} ||= "sha1:" . Digest::SHA1::sha1_hex($self->{data});
+    return $self->{digest} ||= "sha1:" . $self->{sha1}->hexdigest;
 }
 
 sub can_fit {
@@ -62,6 +64,8 @@ sub finalize {
     foreach my $schunk (@{$self->{subchunks}}) {
         $self->{target}->add_to_inventory($schunk->pchunk => $schunk);
     }
+
+    $self->forget_chunkref;
 
     return 1;
 }
@@ -82,11 +86,27 @@ sub stored_chunk_from_dup_internal_raw {
 *backup_digest = \&digest;
 sub backup_length {
     my $self = shift;
-    return CORE::length($self->{data});
+    return $self->{used_up};
 }
-sub chunkref { return \ $_[0]->{data} }
+# return handle to data
+sub chunkref {
+    my $self = shift;
+    croak "ASSERT: _chunk_fh not opened" unless $self->{_chunk_fh}->opened;
+    seek($self->{_chunk_fh}, 0, SEEK_SET);
+    return $self->{_chunk_fh};
+}
 sub inventory_value {
     die "ASSERT: don't expect this to be called";
+}
+# called when chunk data not needed anymore
+sub forget_chunkref {
+    my $self = shift;
+    if ($self->{_chunk_fh}) {
+        die "ASSERT: used_up: $self->{used_up}, size: " . -s $self->{_chunk_fh}->filename
+            unless -s $self->{_chunk_fh}->filename == $self->{used_up};
+        close $self->{_chunk_fh};
+        delete $self->{_chunk_fh};      # also deletes the temp file
+    }
 }
 # </duck-typing>
 
